@@ -1,0 +1,9 @@
+{
+  "name": "reelsaver-backend",
+  "version": "1.0.0",
+  "description": "ReelSaver API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
