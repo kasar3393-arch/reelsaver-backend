@@ -1,167 +1,96 @@
-const http = require("http");
-const https = require("https");
+const express = require("express");
+const cors = require("cors");
 
-const PORT = process.env.PORT || 3000;
-const API_HOST = process.env.RAPIDAPI_HOST;
-const API_KEY = process.env.RAPIDAPI_KEY;
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-const server = http.createServer((req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-
-  if (req.method === "OPTIONS") {
-    res.writeHead(204);
-    return res.end();
-  }
-
-  if (req.url === "/") {
-    return res.end(JSON.stringify({
-      success: true,
-      message: "ReelSaver Backend is Running!"
-    }));
-  }
-
-  if (req.url.startsWith("/api/download")) {
-    const requestUrl = new URL(req.url, "http://localhost");
-    const reelUrl = requestUrl.searchParams.get("url");
-
-    if (!reelUrl) {
-      res.statusCode = 400;
-      return res.end(JSON.stringify({
-        success: false,
-        message: "Instagram URL is required"
-      }));
-    }
-
-    let parsedUrl;
-
-    try {
-      parsedUrl = new URL(reelUrl);
-    } catch {
-      res.statusCode = 400;
-      return res.end(JSON.stringify({
-        success: false,
-        message: "Invalid URL"
-      }));
-    }
-
-    if (
-      parsedUrl.protocol !== "https:" ||
-      !["instagram.com", "www.instagram.com"].includes(parsedUrl.hostname)
-    ) {
-      res.statusCode = 400;
-      return res.end(JSON.stringify({
-        success: false,
-        message: "Please provide a valid Instagram URL"
-      }));
-    }
-
-    if (!API_HOST || !API_KEY) {
-      res.statusCode = 500;
-      return res.end(JSON.stringify({
-        success: false,
-        message: "RapidAPI credentials are missing in Render"
-      }));
-    }
-
-    const apiPath =
-      "/scraper?url=" + encodeURIComponent(reelUrl);
-
-    const options = {
-      hostname: API_HOST,
-      path: apiPath,
-      method: "GET",
-      headers: {
-        "x-rapidapi-host": API_HOST,
-        "x-rapidapi-key": API_KEY
-      }
-    };
-
-    const apiRequest = https.request(options, (apiResponse) => {
-      let data = "";
-
-      apiResponse.on("data", chunk => {
-        data += chunk;
-      });
-
-      apiResponse.on("end", () => {
-        let result;
-
-        try {
-          result = JSON.parse(data);
-        } catch {
-          res.statusCode = 502;
-          return res.end(JSON.stringify({
-            success: false,
-            message: "Unexpected response from downloader API"
-          }));
-        }
-
-        if (
-          apiResponse.statusCode < 200 ||
-          apiResponse.statusCode >= 300
-        ) {
-          res.statusCode = 502;
-          return res.end(JSON.stringify({
-            success: false,
-            message: result.message || "Downloader API request failed"
-          }));
-        }
-
-        // Handle the new API's data array.
-        const media = Array.isArray(result.data)
-          ? result.data
-          : [];
-
-        if (media.length === 0) {
-          res.statusCode = 502;
-          return res.end(JSON.stringify({
-            success: false,
-            message:
-              result.message || "No media found. Check the Instagram URL."
-          }));
-        }
-
-        return res.end(JSON.stringify({
-          success: true,
-          media: media
-            .filter(item => item && item.media)
-            .map(item => ({
-              type: item.isVideo ? "video" : "image",
-              quality: "HD",
-              thumbnail: item.thumb || item.media,
-              url: item.media
-            }))
-        }));
-      });
-    });
-
-    apiRequest.setTimeout(20000, () => {
-      apiRequest.destroy(new Error("API request timed out"));
-    });
-
-    apiRequest.on("error", (error) => {
-      if (!res.writableEnded) {
-        res.statusCode = 502;
-        res.end(JSON.stringify({
-          success: false,
-          message: "Could not connect to downloader API"
-        }));
-      }
-    });
-
-    return apiRequest.end();
-  }
-
-  res.statusCode = 404;
-  res.end(JSON.stringify({
-    success: false,
-    message: "Route not found"
-  }));
+app.get("/", (req, res) => {
+res.send("ReelSaver backend is running!");
 });
 
-server.listen(PORT, () => {
-  console.log("ReelSaver server running on port " + PORT);
+app.get("/api/download", async (req, res) => {
+try {
+const reelUrl = req.query.url;
+
+if (!reelUrl) {
+  return res.status(400).json({
+    success: false,
+    message: "Instagram URL is required"
+  });
+}
+
+if (!/^https?:\/\/(www\.)?instagram\.com\//i.test(reelUrl)) {
+  return res.status(400).json({
+    success: false,
+    message: "Please enter a valid Instagram URL"
+  });
+}
+
+const apiHost = process.env.RAPIDAPI_HOST;
+const apiKey = process.env.RAPIDAPI_KEY;
+
+if (!apiHost || !apiKey) {
+  return res.status(500).json({
+    success: false,
+    message: "RapidAPI environment variables are missing"
+  });
+}
+
+const apiUrl =
+  "https://" + apiHost +
+  "/scraper?url=" + encodeURIComponent(reelUrl);
+
+const response = await fetch(apiUrl, {
+  method: "GET",
+  headers: {
+    "x-rapidapi-host": apiHost,
+    "x-rapidapi-key": apiKey
+  }
+});
+
+const result = await response.json();
+
+if (!response.ok) {
+  return res.status(response.status).json({
+    success: false,
+    message: result.message || "RapidAPI request failed"
+  });
+}
+
+const items = Array.isArray(result.data) ? result.data : [];
+
+const media = items
+  .filter(item => item && item.media)
+  .map(item => ({
+    type: item.isVideo ? "video" : "image",
+    quality: "HD",
+    thumbnail: item.thumb || item.media,
+    url: item.media
+  }));
+
+if (media.length === 0) {
+  return res.status(502).json({
+    success: false,
+    message: "No downloadable media found",
+    details: result
+  });
+}
+
+return res.json({
+  success: true,
+  media: media
+});
+
+} catch (error) {
+return res.status(500).json({
+success: false,
+message: "Server error while downloading media"
+});
+}
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+console.log("ReelSaver backend running on port " + PORT);
 });
