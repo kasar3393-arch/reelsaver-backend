@@ -66,7 +66,8 @@ const server = http.createServer((req, res) => {
       }));
     }
 
-    const apiPath = "/convert?url=" + encodeURIComponent(reelUrl);
+    const apiPath =
+      "/scraper?url=" + encodeURIComponent(reelUrl);
 
     const options = {
       hostname: API_HOST,
@@ -81,45 +82,67 @@ const server = http.createServer((req, res) => {
     const apiRequest = https.request(options, (apiResponse) => {
       let data = "";
 
-      apiResponse.on("data", chunk => data += chunk);
+      apiResponse.on("data", chunk => {
+        data += chunk;
+      });
 
       apiResponse.on("end", () => {
-        res.statusCode = apiResponse.statusCode || 502;
+        let result;
 
         try {
-          const result = JSON.parse(data);
-
-          if (apiResponse.statusCode < 200 ||
-              apiResponse.statusCode >= 300) {
-            return res.end(JSON.stringify({
-              success: false,
-              message: result.message || "Downloader API request failed"
-            }));
-          }
-
-          const media = Array.isArray(result.media) ? result.media : [];
-
-          return res.end(JSON.stringify({
-            success: true,
-            media: media.map(item => ({
-              type: item.type,
-              quality: item.quality,
-              thumbnail: item.thumbnail,
-              url: item.url
-            }))
-          }));
+          result = JSON.parse(data);
         } catch {
+          res.statusCode = 502;
           return res.end(JSON.stringify({
             success: false,
             message: "Unexpected response from downloader API"
           }));
         }
+
+        if (
+          apiResponse.statusCode < 200 ||
+          apiResponse.statusCode >= 300
+        ) {
+          res.statusCode = 502;
+          return res.end(JSON.stringify({
+            success: false,
+            message: result.message || "Downloader API request failed"
+          }));
+        }
+
+        // Handle the new API's data array.
+        const media = Array.isArray(result.data)
+          ? result.data
+          : [];
+
+        if (media.length === 0) {
+          res.statusCode = 502;
+          return res.end(JSON.stringify({
+            success: false,
+            message:
+              result.message || "No media found. Check the Instagram URL."
+          }));
+        }
+
+        return res.end(JSON.stringify({
+          success: true,
+          media: media
+            .filter(item => item && item.media)
+            .map(item => ({
+              type: item.isVideo ? "video" : "image",
+              quality: "HD",
+              thumbnail: item.thumb || item.media,
+              url: item.media
+            }))
+        }));
       });
     });
 
-    apiRequest.setTimeout(20000, () => apiRequest.destroy());
+    apiRequest.setTimeout(20000, () => {
+      apiRequest.destroy(new Error("API request timed out"));
+    });
 
-    apiRequest.on("error", () => {
+    apiRequest.on("error", (error) => {
       if (!res.writableEnded) {
         res.statusCode = 502;
         res.end(JSON.stringify({
